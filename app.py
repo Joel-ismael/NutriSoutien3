@@ -3,13 +3,12 @@ import pandas as pd
 import sqlite3
 import hashlib
 import re
-import plotly.express as px
 from datetime import datetime
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Nutri-Soutien Cloud", page_icon="🥗", layout="wide")
 
-# --- STYLE CSS ---
+# --- STYLE CSS (Pour masquer GitHub) ---
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -23,9 +22,11 @@ st.markdown("""
 def init_db():
     conn = sqlite3.connect('nutrisoutien_data.db', check_same_thread=False)
     c = conn.cursor()
+    # Table des utilisateurs
     c.execute('''CREATE TABLE IF NOT EXISTS users (
                 email TEXT PRIMARY KEY, firstname TEXT, lastname TEXT, 
                 phone TEXT, password TEXT, sex TEXT, nationality TEXT)''')
+    # Table des collectes (Liée à l'email de l'utilisateur)
     c.execute('''CREATE TABLE IF NOT EXISTS collectes (
                 id_collecte TEXT, user_email TEXT, date TEXT, patient TEXT, 
                 age INTEGER, poids REAL, taille REAL, imc REAL, statut TEXT)''')
@@ -35,9 +36,15 @@ def init_db():
 conn = init_db()
 c = conn.cursor()
 
+# --- FONCTIONS DE SÉCURITÉ ---
 def hash_pwd(pwd):
     return hashlib.sha256(str.encode(pwd)).hexdigest()
 
+def check_phone(phone, code):
+    # Vérifie si le numéro commence par le code pays
+    return phone.startswith(code)
+
+# --- LOGIQUE DE L'APPLICATION ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user_email = ""
@@ -50,31 +57,37 @@ def main():
         if choice == "Inscription":
             st.subheader("📝 Créer un compte professionnel")
             col1, col2 = st.columns(2)
+            
             with col1:
                 nom = st.text_input("Nom")
                 prenom = st.text_input("Prénom")
                 email = st.text_input("Adresse Email")
                 sex = st.selectbox("Sexe", ["Masculin", "Féminin", "Autre"])
+            
             with col2:
                 countries = {"Cameroun": "+237", "Gabon": "+241", "Sénégal": "+221", "Côte d'Ivoire": "+225", "France": "+33"}
                 nat = st.selectbox("Nationalité", list(countries.keys()))
                 code = countries[nat]
-                phone = st.text_input(f"Téléphone (Indicatif {code})")
-                pwd = st.text_input("Mot de passe", type='password')
+                phone = st.text_input(f"Téléphone (Doit commencer par {code})")
+                pwd = st.text_input("Mot de passe", type='password', help="Majuscule, minuscule, chiffre requis")
 
             if st.button("S'inscrire"):
+                # Validation robuste
                 if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
                     st.error("Email invalide.")
-                elif not phone.startswith(code):
+                elif not check_phone(phone, code):
                     st.error(f"Le numéro doit commencer par {code}")
+                elif len(pwd) < 6:
+                    st.error("Mot de passe trop court.")
                 else:
                     try:
                         c.execute('INSERT INTO users VALUES (?,?,?,?,?,?,?)', 
                                  (email, prenom, nom, phone, hash_pwd(pwd), sex, nat))
                         conn.commit()
-                        st.success("Compte créé ! Veuillez vous connecter.")
+                        st.success("Compte créé avec succès ! Veuillez vous connecter.")
                     except:
                         st.error("Cet email est déjà utilisé.")
+
         else:
             st.subheader("🔑 Connexion")
             login_email = st.text_input("Email")
@@ -89,7 +102,9 @@ def main():
                     st.rerun()
                 else:
                     st.error("Email ou mot de passe incorrect.")
+
     else:
+        # --- L'UTILISATEUR EST CONNECTÉ ---
         st.sidebar.title(f"👤 {st.session_state.user_name}")
         page = st.sidebar.radio("Navigation", ["Collecte & Dashboard", "Mon Profil", "Déconnexion"])
 
@@ -101,6 +116,7 @@ def main():
             st.subheader("⚙️ Paramètres du profil")
             c.execute('SELECT * FROM users WHERE email=?', (st.session_state.user_email,))
             u = c.fetchone()
+            
             with st.form("update_profile"):
                 new_fname = st.text_input("Prénom", value=u[1])
                 new_lname = st.text_input("Nom", value=u[2])
@@ -113,7 +129,9 @@ def main():
                     st.rerun()
 
         elif page == "Collecte & Dashboard":
+            # --- CODE DE COLLECTE PRÉCÉDENT MAIS LIÉ À L'UTILISATEUR ---
             tab1, tab2 = st.tabs(["📥 Saisie", "📊 Historique"])
+            
             with tab1:
                 with st.form("collecte"):
                     pid = st.text_input("ID Patient")
@@ -126,19 +144,13 @@ def main():
                         c.execute('INSERT INTO collectes VALUES (?,?,?,?,?,?,?,?,?)',
                                  (pid, st.session_state.user_email, str(datetime.now().date()), p_nom, 25, p_poids, p_taille, imc, status))
                         conn.commit()
-                        st.success("Données enregistrées !")
+                        st.success("Données enregistrées en base !")
 
             with tab2:
+                # On ne lit que les données de l'utilisateur connecté
                 c.execute('SELECT * FROM collectes WHERE user_email=?', (st.session_state.user_email,))
-                rows = c.fetchall()
-                if rows:
-                    my_data = pd.DataFrame(rows, columns=["ID", "User", "Date", "Patient", "Âge", "Poids", "Taille", "IMC", "Statut"])
-                    st.dataframe(my_data, use_container_width=True)
-                    fig_pie = px.pie(my_data, names="Statut", hole=0.4, color="Statut",
-                                     color_discrete_map={"Normal": "#2ecc71", "Alerte": "#e74c3c"})
-                    st.plotly_chart(fig_pie, use_container_width=True)
-                else:
-                    st.info("Aucune donnée enregistrée.")
+                my_data = pd.DataFrame(c.fetchall(), columns=["ID", "User", "Date", "Patient", "Âge", "Poids", "Taille", "IMC", "Statut"])
+                st.dataframe(my_data)
 
 if __name__ == '__main__':
     main()
